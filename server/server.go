@@ -86,12 +86,37 @@ func handleConnection(conn net.Conn) {
 	go func(c net.Conn) {
 		reader := bufio.NewReader(c)
 		for {
-			response, err := reader.ReadString('\n')
+			line, err := reader.ReadString('\n')
 			if err != nil {
 				logInfo.Printf("Client disconnected (%s): %v\n", c.RemoteAddr(), err)
 				break
 			}
-			logInfo.Printf("[Response from %s] %s", c.RemoteAddr(), response)
+			line = strings.TrimSpace(line)
+
+			if strings.HasPrefix(line, "BEGIN_FILE:") {
+				filename := strings.TrimPrefix(line, "BEGIN_FILE:")
+				file, err := os.Create("uploads/" + filename)
+				if err != nil {
+					logInfo.Printf("[!] Could not create file %s: %v", filename, err)
+					continue
+				}
+				for {
+					dataLine, err := reader.ReadString('\n')
+					if err != nil {
+						logInfo.Printf("[!] Error while reading file: %v", err)
+						break
+					}
+					if strings.TrimSpace(dataLine) == "END_FILE" {
+						break
+					}
+					file.WriteString(dataLine)
+				}
+				file.Close()
+				logInfo.Printf("[+] File %s received from %s", filename, c.RemoteAddr())
+				continue
+			}
+
+			logInfo.Printf("[Response from %s] %s", c.RemoteAddr(), line)
 		}
 
 		connMutex.Lock()

