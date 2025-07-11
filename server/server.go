@@ -17,11 +17,17 @@ var(
 	l_conn = list.New()
 	conn_map = make(map[net.Conn]*list.Element)
 	connMutex = sync.Mutex{}
-	logFile, err = os.OpenFile("logs.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	logInfo = log.New(logFile, "INFO : ", log.LstdFlags|log.Lmicroseconds|log.Lshortfile)
+	logInfo *log.Logger
 )
 
 func main() {
+
+	// Handle log file
+	logFile, err := os.OpenFile("logs.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	logInfo = log.New(logFile, "INFO : ", log.LstdFlags|log.Lmicroseconds|log.Lshortfile)
 
 	log.SetOutput(logFile)
 
@@ -40,11 +46,6 @@ func main() {
 			fmt.Println(err)
 			continue
 		}
-
-		connMutex.Lock()
-		e := l_conn.PushBack(conn)
-		conn_map[conn] = e
-		connMutex.Unlock()
 
 		go handleConnection(conn)
 	}
@@ -65,9 +66,14 @@ func displayConnections() {
 
 
 func handleConnection(conn net.Conn) {
-	defer conn.Close()
 
-	logInfo.Printf("Connection established with %s.\n", conn.RemoteAddr())
+	connMutex.Lock()
+	e := l_conn.PushBack(conn)
+	conn_map[conn] = e
+	connMutex.Unlock()
+
+
+	logInfo.Printf("Connection established with %s\n", conn.RemoteAddr())
 
 	// Send message to client
 	_, err := conn.Write([]byte("Connected."))
@@ -76,30 +82,26 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Receive message from client
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	// Asynchrone reading from client
+	go func(c net.Conn) {
+		reader := bufio.NewReader(c)
+		for {
+			response, err := reader.ReadString('\n')
+			if err != nil {
+				logInfo.Printf("Client disconnected (%s): %v\n", c.RemoteAddr(), err)
+				break
+			}
+			logInfo.Printf("[Response from %s] %s", c.RemoteAddr(), response)
+		}
 
-	logInfo.Printf("Received: %s, from %s.\n", string(buf[:n]), conn.RemoteAddr())
-
-	for {
-		_, err = conn.Read(buf)
-		if err != nil {
-			logInfo.Printf("Client disconnected (%s), %v\n", conn.RemoteAddr(), err)
-			break
-		}	
-	}
-
-	if elem, ok := conn_map[conn]; ok {
 		connMutex.Lock()
-		l_conn.Remove(elem)
-		delete(conn_map, conn)
+		if elem, ok := conn_map[c]; ok {
+			l_conn.Remove(elem)
+			delete(conn_map, c)
+		}
 		connMutex.Unlock()
-	}
+		c.Close()
+	}(conn)
 }
 
 
@@ -109,10 +111,11 @@ func broadcastMessage(msg string) {
 
 	for e := l_conn.Front(); e != nil; e = e.Next() {
 		if conn, ok := e.Value.(net.Conn); ok {
-			_, err := conn.Write([]byte(msg))
+			_, err := conn.Write([]byte(msg + "\n"))
 			if err != nil {
 				logInfo.Printf("Error when sending \"%s\" to %s: %v\n", msg, conn.RemoteAddr(), err)
 			}
+			logInfo.Printf("Send command \"%s\" to %s\n", msg, conn.RemoteAddr())
 		}
 	}
 }
@@ -146,3 +149,5 @@ func showOptions() {
 		}
 	}
 }
+
+
