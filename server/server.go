@@ -4,21 +4,29 @@ import (
 	"fmt"
 	"net"
 	"log"
-	"container/list"
 	"os"
 	"bufio"
 	"strings"
 	"sync"
+	"github.com/google/uuid"
 )
+
+type Client struct {
+	ID string
+	Conn net.Conn
+}
 
 
 var(
 	// Stored connections
-	l_conn = list.New()
-	conn_map = make(map[net.Conn]*list.Element)
-	connMutex = sync.Mutex{}
 	logInfo *log.Logger
+	clients = make(map[string]Client)
+	clientsMu = sync.Mutex{}
 )
+
+
+
+
 
 func main() {
 
@@ -53,45 +61,51 @@ func main() {
 
 
 func displayConnections() {
-	connMutex.Lock()
-	defer connMutex.Unlock()
 
-	fmt.Println("Active connections : ")
-	for e := l_conn.Front(); e != nil; e = e.Next() {
-		if conn, ok := e.Value.(net.Conn); ok {
-			fmt.Printf("- %s\n", conn.RemoteAddr())
-		}
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+
+	fmt.Println("Active clients:")
+	for id, client := range clients {
+		fmt.Printf("- ID: %s | Address: %s\n", id, client.Conn.RemoteAddr())
 	}
 }
 
 
 func handleConnection(conn net.Conn) {
 
-	connMutex.Lock()
-	e := l_conn.PushBack(conn)
-	conn_map[conn] = e
-	connMutex.Unlock()
+	id := uuid.New().String()
+
+	client := Client{
+		ID: id,
+		Conn: conn,
+	}
+
+	clientsMu.Lock()
+	clients[id] = client
+	clientsMu.Unlock()
 
 
-	logInfo.Printf("Connection established with %s\n", conn.RemoteAddr())
+	logInfo.Printf("Client %s connected from %s", id, conn.RemoteAddr())
 
 	// Send message to client
-	_, err := conn.Write([]byte("Connected."))
+	_, err := conn.Write([]byte("Your ID: " + id + "\n"))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
 	// Asynchrone reading from client
-	go func(c net.Conn) {
-		reader := bufio.NewReader(c)
+	go func(c Client) {
+		reader := bufio.NewReader(c.Conn)
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
-				logInfo.Printf("Client disconnected (%s): %v\n", c.RemoteAddr(), err)
+				logInfo.Printf("Client %s disconnected (%s): %v\n", c.ID, c.Conn.RemoteAddr(), err)
 				break
 			}
 			line = strings.TrimSpace(line)
+			logInfo.Printf("Response [Client %s (%s)] %s", c.ID, c.Conn.RemoteAddr(), line)
 
 			if strings.HasPrefix(line, "BEGIN_FILE:") {
 				filename := strings.TrimPrefix(line, "BEGIN_FILE:")
@@ -112,36 +126,39 @@ func handleConnection(conn net.Conn) {
 					file.WriteString(dataLine)
 				}
 				file.Close()
-				logInfo.Printf("[+] File %s received from %s", filename, c.RemoteAddr())
+				logInfo.Printf("[+] File %s received from %s", filename, c.Conn.RemoteAddr())
 				continue
 			}
-
-			logInfo.Printf("[Response from %s] %s", c.RemoteAddr(), line)
 		}
 
-		connMutex.Lock()
-		if elem, ok := conn_map[c]; ok {
-			l_conn.Remove(elem)
-			delete(conn_map, c)
-		}
-		connMutex.Unlock()
-		c.Close()
-	}(conn)
+		clientsMu.Lock()
+		delete(clients, c.ID)
+		clientsMu.Unlock()
+		c.Conn.Close()
+	}(client)
 }
 
 
 func broadcastMessage(msg string) {
-	connMutex.Lock()
-	defer connMutex.Unlock()
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
 
-	for e := l_conn.Front(); e != nil; e = e.Next() {
-		if conn, ok := e.Value.(net.Conn); ok {
-			_, err := conn.Write([]byte(msg + "\n"))
-			if err != nil {
-				logInfo.Printf("Error when sending \"%s\" to %s: %v\n", msg, conn.RemoteAddr(), err)
-			}
-			logInfo.Printf("Send command \"%s\" to %s\n", msg, conn.RemoteAddr())
+	var toDelete []string
+
+	for id, client := range clients {
+		_, err := client.Conn.Write([]byte(msg + "\n"))
+		if err != nil {
+			logInfo.Printf("Error when sending \"%s\" to %s client (%s): %v\n", msg, id, client.Conn.RemoteAddr(), err)
+			toDelete = append(toDelete, id)
+		} else {
+			logInfo.Printf("[+] Sent message \"%s\" to %s client (%s)\n", msg, id, client.Conn.RemoteAddr())
 		}
+	}
+
+	// Cleanup disconnected clients
+	for _, id := range toDelete {
+		clients[id].Conn.Close()
+		delete(clients, id)
 	}
 }
 
@@ -151,7 +168,8 @@ func showOptions() {
 		fmt.Println("\nServer options : ")
 		fmt.Println("[+] 1 - Broadcast a message")
 		fmt.Println("[+] 2 - Display active connections")
-		fmt.Println("[+] 3 - Quit server")
+		fmt.Println("[+] 3 - Send a message to a specific client")
+		fmt.Println("[+] 4 - Quit server")
 		fmt.Print("> ")
 
 		var choice int
@@ -167,6 +185,32 @@ func showOptions() {
 		case 2:
 			displayConnections()
 		case 3:
+			displayConnections()
+			fmt.Print("Enter client ID: ")
+			reader := bufio.NewReader(os.Stdin)
+			id, _ := reader.ReadString('\n')
+			id = strings.TrimSpace(id)
+
+			clientsMu.Lock()
+			client, exists := clients[id]
+			clientsMu.Unlock()
+
+			if !exists {
+				fmt.Println("[!] Client not found")
+				break
+			}
+
+			fmt.Print("Enter message: ")
+			msg, _ := reader.ReadString('\n')
+			msg = strings.TrimSpace(msg)
+
+			_, err := client.Conn.Write([]byte(msg + "\n"))
+			if err != nil {
+				logInfo.Printf("[!] Failed to send message to %s: %v", id, err)
+			} else {
+				logInfo.Printf("[+] Sent message \"%s\" to %s (%s)", msg, id, client.Conn.RemoteAddr())
+			}
+		case 4:
 			fmt.Println("Shutting down server...")
 			os.Exit(0)
 		default:
