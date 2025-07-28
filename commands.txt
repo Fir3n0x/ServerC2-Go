@@ -1,0 +1,22 @@
+gcc -m32 -fno-stack-protector -nostdlib -Wl,--entry=entry client.c -o connect.exe
+objcopy -O binary connect.exe connect.bin
+
+
+gcc -m32 -fno-stack-protector -nostdlib client1.c -o connect.exe -lkernel32 -lws2_32 -Wl,--entry=_entry
+gcc -m64 -fno-stack-protector -nostdlib client2.c -o connect.exe -lkernel32 -lws2_32 -Wl,--entry=entry
+objcopy -O binary --only-section=.text connect.exe connect.bin
+
+
+$>donut.exe -f 1 -a 2 -i ..\connect.exe -o ..\connect.bin
+-f 1 raw shellcode
+-a 2 x64
+
+nmake -f Makefile.msvc
+
+
+
+Under Linux or WSL :
+base64 -w0 connect.bin > connect.b64
+
+Under PowerShell :
+[Convert]::ToBase64String((Get-Content .\connect.bin -Encoding Byte)) > connect.b64
